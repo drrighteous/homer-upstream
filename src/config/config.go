@@ -731,6 +731,17 @@ type StoragePolicyConfig struct {
 	MoveFactor         float64        `json:"move_factor" mapstructure:"move_factor" default:"0.8"`                      // Move when volume is X% full
 	ConcurrentMoves    int            `json:"concurrent_moves" mapstructure:"concurrent_moves" default:"2"`              // Max concurrent partition moves
 	MoveOnStartup      bool           `json:"move_on_startup" mapstructure:"move_on_startup" default:"false"`            // Run tiering on startup
+	// TestOnlyTable, TestOnlyPartitionDate, TestOnlyExpectedRows,
+	// TestOnlyMaxDataAgeDays, and
+	// TestOnlySkipMaintenance are a deliberately fail-closed private
+	// production-validation gate. They are unset in normal deployments. When
+	// all five are configured, Homer moves only the named closed-day partition
+	// during an otherwise automatic startup cycle and skips maintenance.
+	TestOnlyTable           string `json:"test_only_table" mapstructure:"test_only_table"`
+	TestOnlyPartitionDate   string `json:"test_only_partition_date" mapstructure:"test_only_partition_date"`
+	TestOnlyExpectedRows    int64  `json:"test_only_expected_rows" mapstructure:"test_only_expected_rows"`
+	TestOnlyMaxDataAgeDays  int    `json:"test_only_max_data_age_days" mapstructure:"test_only_max_data_age_days"`
+	TestOnlySkipMaintenance bool   `json:"test_only_skip_maintenance" mapstructure:"test_only_skip_maintenance"`
 }
 
 // VolumeConfig configures a storage volume (hot or cold)

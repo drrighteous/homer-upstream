@@ -76,11 +76,16 @@ func TestLoad_EnvScalars_AllSections(t *testing.T) {
 		"HOMER_STORAGE_DUCKLAKE_COMPACTION_MAX_COMPACTED_FILES":          "100",
 
 		// === storage / storage_policy (scalar settings) ===
-		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_ENABLE":                "true",
-		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_TTL_MOVE_INTERVAL_SEC": "3600",
-		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_MOVE_FACTOR":           "0.8",
-		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_CONCURRENT_MOVES":      "2",
-		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_MOVE_ON_STARTUP":       "false",
+		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_ENABLE":                      "true",
+		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_TTL_MOVE_INTERVAL_SEC":       "3600",
+		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_MOVE_FACTOR":                 "0.8",
+		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_CONCURRENT_MOVES":            "2",
+		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_MOVE_ON_STARTUP":             "false",
+		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_TEST_ONLY_TABLE":             "hep_proto_5_default",
+		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_TEST_ONLY_PARTITION_DATE":    "2026-08-19",
+		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_TEST_ONLY_EXPECTED_ROWS":     "1000",
+		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_TEST_ONLY_MAX_DATA_AGE_DAYS": "1",
+		"HOMER_STORAGE_DUCKLAKE_STORAGE_POLICY_TEST_ONLY_SKIP_MAINTENANCE":  "true",
 
 		// === node / flight server ===
 		"HOMER_NODE_FLIGHT_SERVER_HOST":             "0.0.0.0",
@@ -171,6 +176,11 @@ func TestLoad_EnvScalars_AllSections(t *testing.T) {
 		{"StoragePolicy.TTLMoveIntervalSec", cfg.Storage.DuckLake.StoragePolicy.TTLMoveIntervalSec, 3600},
 		{"StoragePolicy.MoveFactor", cfg.Storage.DuckLake.StoragePolicy.MoveFactor, 0.8},
 		{"StoragePolicy.ConcurrentMoves", cfg.Storage.DuckLake.StoragePolicy.ConcurrentMoves, 2},
+		{"StoragePolicy.TestOnlyTable", cfg.Storage.DuckLake.StoragePolicy.TestOnlyTable, "hep_proto_5_default"},
+		{"StoragePolicy.TestOnlyPartitionDate", cfg.Storage.DuckLake.StoragePolicy.TestOnlyPartitionDate, "2026-08-19"},
+		{"StoragePolicy.TestOnlyExpectedRows", cfg.Storage.DuckLake.StoragePolicy.TestOnlyExpectedRows, int64(1000)},
+		{"StoragePolicy.TestOnlyMaxDataAgeDays", cfg.Storage.DuckLake.StoragePolicy.TestOnlyMaxDataAgeDays, 1},
+		{"StoragePolicy.TestOnlySkipMaintenance", cfg.Storage.DuckLake.StoragePolicy.TestOnlySkipMaintenance, true},
 
 		// node
 		{"Node.FlightServer.Port", cfg.Node.FlightServer.Port, 50051},

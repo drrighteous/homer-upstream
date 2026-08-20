@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -32,17 +33,29 @@ type TieringConfig struct {
 	// DuckLake maintenance on tiered volumes after moves/expires (mirrors
 	// compaction.snapshot_expire_interval_sec; 0 = default 3600).
 	SnapshotExpireSec int
+
+	// The TestOnly* fields are a private, fail-closed production-validation
+	// guard. They intentionally have no defaults: all five must be configured
+	// before a restricted automatic move is allowed to start.
+	TestOnlyTable           string
+	TestOnlyPartitionDate   string
+	TestOnlyExpectedRows    int64
+	TestOnlyMaxDataAgeDays  int
+	TestOnlySkipMaintenance bool
 }
+
+var testOnlyTierTableName = regexp.MustCompile(`^hep_proto_[A-Za-z0-9_]+$`)
 
 // TieringService manages automatic data tiering between storage volumes
 type TieringService struct {
-	config        TieringConfig
-	tieredStorage *ducklake.TieredStorageManager
-	stopChan      chan struct{}
-	wg            sync.WaitGroup
-	mu            sync.Mutex
-	isRunning     bool
-	stopOnce      sync.Once
+	config                TieringConfig
+	tieredStorage         *ducklake.TieredStorageManager
+	stopChan              chan struct{}
+	wg                    sync.WaitGroup
+	mu                    sync.Mutex
+	isRunning             bool
+	testOnlyMoveAttempted bool
+	stopOnce              sync.Once
 }
 
 // NewTieringService creates a new tiering service
@@ -65,6 +78,9 @@ func (ts *TieringService) Start() error {
 		logger.Info("TieringService: Not enough volumes for tiering (need at least 2)")
 		return nil
 	}
+	if err := ts.validateTestOnlyMoveConfig(volumes); err != nil {
+		return err
+	}
 
 	interval := time.Duration(ts.config.CheckIntervalSec) * time.Second
 	if interval == 0 {
@@ -75,12 +91,29 @@ func (ts *TieringService) Start() error {
 		"interval", interval.String(),
 		"concurrent_moves", ts.config.ConcurrentMoves,
 		"volumes", len(volumes))
+	if ts.testOnlyMoveEnabled() {
+		logger.Warn("TieringService: TEST-ONLY automatic move gate enabled",
+			"table", ts.config.TestOnlyTable,
+			"date", ts.config.TestOnlyPartitionDate,
+			"expected_rows", ts.config.TestOnlyExpectedRows,
+			"max_data_age_days", ts.config.TestOnlyMaxDataAgeDays,
+			"skip_maintenance", ts.config.TestOnlySkipMaintenance)
+	}
 
 	// Run initial tiering if configured
 	if ts.config.MoveOnStartup {
+		ts.wg.Add(1)
 		go func() {
-			time.Sleep(10 * time.Second) // Wait for system to stabilize
-			ts.runTieringCycle()
+			defer ts.wg.Done()
+			timer := time.NewTimer(10 * time.Second) // Wait for system to stabilize
+			defer timer.Stop()
+			select {
+			case <-ts.stopChan:
+				return
+			case <-timer.C:
+				logger.Info("TieringService: Running startup tiering cycle", "trigger", "startup")
+				ts.runTieringCycle("startup")
+			}
 		}()
 	}
 
@@ -104,13 +137,13 @@ func (ts *TieringService) tieringLoop(interval time.Duration) {
 			logger.Info("TieringService: Stopping tiering loop")
 			return
 		case <-ticker.C:
-			ts.runTieringCycle()
+			ts.runTieringCycle("periodic")
 		}
 	}
 }
 
 // runTieringCycle executes one tiering cycle
-func (ts *TieringService) runTieringCycle() {
+func (ts *TieringService) runTieringCycle(trigger string) {
 	ts.mu.Lock()
 	if ts.isRunning {
 		ts.mu.Unlock()
@@ -127,9 +160,32 @@ func (ts *TieringService) runTieringCycle() {
 	}()
 
 	startTime := time.Now()
-	logger.Info("TieringService: Starting tiering cycle")
+	logger.Info("TieringService: Starting tiering cycle", "trigger", trigger)
 
 	volumes := ts.tieredStorage.GetVolumes()
+	if ts.testOnlyMoveEnabled() {
+		ts.mu.Lock()
+		if ts.testOnlyMoveAttempted {
+			ts.mu.Unlock()
+			logger.Warn("TieringService: TEST-ONLY automatic move already attempted; refusing another move", "trigger", trigger)
+			return
+		}
+		ts.testOnlyMoveAttempted = true
+		ts.mu.Unlock()
+
+		moved, err := ts.moveTestOnlyPartition(volumes[0], volumes[1])
+		if err != nil {
+			logger.Error("TieringService: TEST-ONLY automatic move failed", "error", err)
+		}
+		logger.Info("TieringService: Tiering cycle completed",
+			"duration", time.Since(startTime).String(),
+			"partitions_moved", moved,
+			"partitions_expired", 0,
+			"trigger", trigger,
+			"test_only", true,
+			"maintenance_skipped", true)
+		return
+	}
 	var totalMoved int64
 	var totalExpired int64
 
@@ -217,6 +273,132 @@ func (ts *TieringService) runTieringCycle() {
 		"duration", duration.String(),
 		"partitions_moved", totalMoved,
 		"partitions_expired", totalExpired)
+}
+
+func (ts *TieringService) testOnlyMoveEnabled() bool {
+	return ts.config.TestOnlyTable != "" ||
+		ts.config.TestOnlyPartitionDate != "" ||
+		ts.config.TestOnlyExpectedRows != 0 ||
+		ts.config.TestOnlyMaxDataAgeDays != 0 ||
+		ts.config.TestOnlySkipMaintenance
+}
+
+func (ts *TieringService) validateTestOnlyMoveConfig(volumes []*ducklake.Volume) error {
+	if !ts.testOnlyMoveEnabled() {
+		return nil
+	}
+	if ts.config.TestOnlyTable == "" || ts.config.TestOnlyPartitionDate == "" ||
+		ts.config.TestOnlyExpectedRows <= 0 || ts.config.TestOnlyMaxDataAgeDays <= 0 || !ts.config.TestOnlySkipMaintenance {
+		return fmt.Errorf("test-only automatic move requires table, partition date, positive expected rows, positive max data age days, and skip maintenance=true")
+	}
+	if !ts.config.MoveOnStartup {
+		return fmt.Errorf("test-only automatic move requires move_on_startup=true")
+	}
+	if !testOnlyTierTableName.MatchString(ts.config.TestOnlyTable) {
+		return fmt.Errorf("test-only automatic move table must match %s", testOnlyTierTableName.String())
+	}
+	if parsed, err := time.Parse("2006-01-02", ts.config.TestOnlyPartitionDate); err != nil ||
+		parsed.Format("2006-01-02") != ts.config.TestOnlyPartitionDate {
+		return fmt.Errorf("test-only automatic move partition date must be YYYY-MM-DD")
+	}
+	if len(volumes) != 2 || volumes[0] == nil || volumes[1] == nil {
+		return fmt.Errorf("test-only automatic move requires exactly two configured volumes")
+	}
+	if volumes[0].Type != ducklake.VolumeTypeLocal || volumes[1].Type != ducklake.VolumeTypeS3 {
+		return fmt.Errorf("test-only automatic move requires hot local then cold s3 volumes")
+	}
+	for _, vol := range volumes {
+		if vol.MaxDataAgeDays != 0 || vol.MaxSizeGB != 0 {
+			return fmt.Errorf("test-only automatic move requires all normal max_data_age_days and max_size_gb triggers to be 0")
+		}
+	}
+	return nil
+}
+
+// moveTestOnlyPartition exercises the same automatic TieringService and
+// TieredStorageManager.MovePartition path as a normal TTL run, while
+// deliberately refusing every partition except one operator-selected target.
+// This private guard is used only for the bounded production validation run.
+func (ts *TieringService) moveTestOnlyPartition(srcVol, dstVol *ducklake.Volume) (int64, error) {
+	cutoffDate := time.Now().AddDate(0, 0, -ts.config.TestOnlyMaxDataAgeDays).Format("2006-01-02")
+	if ts.config.TestOnlyPartitionDate > cutoffDate {
+		return 0, fmt.Errorf("test-only partition %s is newer than TTL cutoff %s", ts.config.TestOnlyPartitionDate, cutoffDate)
+	}
+
+	partitions, err := ts.tieredStorage.GetPartitionsOlderThan(srcVol, ts.config.TestOnlyTable, cutoffDate)
+	if err != nil {
+		return 0, fmt.Errorf("test-only partition scan: %w", err)
+	}
+	matched := false
+	for _, partition := range partitions {
+		if partition == ts.config.TestOnlyPartitionDate {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return 0, fmt.Errorf("test-only partition %s/%s is not an eligible hot TTL partition", ts.config.TestOnlyTable, ts.config.TestOnlyPartitionDate)
+	}
+
+	srcRows, err := ts.testOnlyPartitionRowCount(srcVol)
+	if err != nil {
+		return 0, fmt.Errorf("count test-only source partition: %w", err)
+	}
+	if srcRows <= 0 {
+		return 0, fmt.Errorf("test-only source partition has no rows")
+	}
+	if srcRows != ts.config.TestOnlyExpectedRows {
+		return 0, fmt.Errorf("test-only source partition rows %d differ from configured expected %d", srcRows, ts.config.TestOnlyExpectedRows)
+	}
+
+	if err := ts.ensureTableExists(srcVol, dstVol, ts.config.TestOnlyTable); err != nil {
+		return 0, fmt.Errorf("ensure test-only destination table: %w", err)
+	}
+	dstRows, err := ts.testOnlyPartitionRowCount(dstVol)
+	if err != nil {
+		return 0, fmt.Errorf("count test-only destination partition: %w", err)
+	}
+	if dstRows != 0 {
+		return 0, fmt.Errorf("test-only destination partition is not empty (%d rows); refusing MovePartition", dstRows)
+	}
+
+	logger.Info("TieringService: TEST-ONLY automatic move preflight passed",
+		"table", ts.config.TestOnlyTable,
+		"date", ts.config.TestOnlyPartitionDate,
+		"source_rows", srcRows,
+		"destination_rows", dstRows,
+		"expected_rows", ts.config.TestOnlyExpectedRows)
+
+	if err := ts.tieredStorage.MovePartition(ts.config.TestOnlyTable, ts.config.TestOnlyPartitionDate, srcVol, dstVol); err != nil {
+		return 0, err
+	}
+
+	srcRowsAfter, err := ts.testOnlyPartitionRowCount(srcVol)
+	if err != nil {
+		return 0, fmt.Errorf("count test-only source partition after move: %w", err)
+	}
+	dstRowsAfter, err := ts.testOnlyPartitionRowCount(dstVol)
+	if err != nil {
+		return 0, fmt.Errorf("count test-only destination partition after move: %w", err)
+	}
+	if srcRowsAfter != 0 || dstRowsAfter != srcRows {
+		return 0, fmt.Errorf("test-only post-move row-count mismatch: source=%d destination=%d expected_destination=%d", srcRowsAfter, dstRowsAfter, srcRows)
+	}
+
+	logger.Info("TieringService: TEST-ONLY automatic move verified",
+		"table", ts.config.TestOnlyTable,
+		"date", ts.config.TestOnlyPartitionDate,
+		"rows", srcRows)
+	return 1, nil
+}
+
+func (ts *TieringService) testOnlyPartitionRowCount(vol *ducklake.Volume) (int64, error) {
+	tableFQN := fmt.Sprintf("%s.main.%s", vol.LakeName, ts.config.TestOnlyTable)
+	var count int64
+	if err := ts.tieredStorage.GetDB().QueryRow("SELECT COUNT(*) FROM "+tableFQN+" WHERE date = ?", ts.config.TestOnlyPartitionDate).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // checkVolumeSizeThreshold checks if volume size exceeds move_factor threshold

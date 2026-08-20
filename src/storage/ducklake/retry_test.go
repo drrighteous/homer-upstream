@@ -10,6 +10,7 @@ package ducklake
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -98,5 +99,46 @@ func TestMovePartitionIdempotencySkipsInsertWhenDestinationHasRows(t *testing.T)
 	locker := tsm.hotCatalogLocker(&Volume{LakeName: "lake_hot"})
 	if locker == nil {
 		t.Fatal("hot locker should be set for primary source volume")
+	}
+}
+
+func TestMovePartitionRefusesMismatchedDestination(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Skipf("duckdb unavailable: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	for _, statement := range []string{
+		"ATTACH ':memory:' AS lake_hot",
+		"ATTACH ':memory:' AS lake_cold",
+		"CREATE TABLE lake_hot.main.hep_proto_test (date DATE, id INTEGER)",
+		"CREATE TABLE lake_cold.main.hep_proto_test (date DATE, id INTEGER)",
+		"INSERT INTO lake_hot.main.hep_proto_test VALUES ('2000-01-02', 1), ('2000-01-02', 2)",
+		"INSERT INTO lake_cold.main.hep_proto_test VALUES ('2000-01-02', 99)",
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("setup %q: %v", statement, err)
+		}
+	}
+
+	hot := &Volume{Name: "hot", LakeName: "lake_hot"}
+	cold := &Volume{Name: "cold", LakeName: "lake_cold"}
+	tsm := &TieredStorageManager{db: db, primaryVolume: hot}
+
+	err = tsm.MovePartition("hep_proto_test", "2000-01-02", hot, cold)
+	if err == nil || !strings.Contains(err.Error(), "refusing source delete") {
+		t.Fatalf("MovePartition() error = %v, want mismatched destination refusal", err)
+	}
+
+	for lake, want := range map[string]int{"lake_hot": 2, "lake_cold": 1} {
+		var got int
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + lake + ".main.hep_proto_test WHERE date = '2000-01-02'").Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", lake, err)
+		}
+		if got != want {
+			t.Fatalf("%s row count = %d, want %d", lake, got, want)
+		}
 	}
 }

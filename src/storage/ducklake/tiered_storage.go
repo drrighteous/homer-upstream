@@ -424,17 +424,13 @@ func (tsm *TieredStorageManager) MovePartition(tableName string, date string, sr
 
 	if dstCount > 0 {
 		if dstCount != srcCount {
-			logger.Warn("TieredStorageManager: Destination row count differs from source; delete-only retry",
-				"table", tableName,
-				"date", date,
-				"source_rows", srcCount,
-				"destination_rows", dstCount)
-		} else {
-			logger.Info("TieredStorageManager: Destination already has partition; retrying source delete only",
-				"table", tableName,
-				"date", date,
-				"rows", dstCount)
+			return fmt.Errorf("destination row count differs from source; refusing source delete (source_rows=%d destination_rows=%d)",
+				srcCount, dstCount)
 		}
+		logger.Info("TieredStorageManager: Destination already has partition; retrying source delete only",
+			"table", tableName,
+			"date", date,
+			"rows", dstCount)
 	} else {
 		insertSQL := fmt.Sprintf(
 			"INSERT INTO %s SELECT * FROM %s WHERE date = ?",
@@ -449,6 +445,14 @@ func (tsm *TieredStorageManager) MovePartition(tableName string, date string, sr
 			date,
 		); err != nil {
 			return fmt.Errorf("failed to insert into destination: %w", err)
+		}
+		dstCount, err = tsm.partitionRowCount(dstTable, date)
+		if err != nil {
+			return fmt.Errorf("failed to verify destination partition rows after insert: %w", err)
+		}
+		if dstCount != srcCount {
+			return fmt.Errorf("destination row count differs after copy; refusing source delete (source_rows=%d destination_rows=%d)",
+				srcCount, dstCount)
 		}
 	}
 

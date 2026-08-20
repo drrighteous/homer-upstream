@@ -959,18 +959,18 @@ func (w *Writer) startTieringService() error {
 
 	// Create tiered storage manager
 	tsmConfig := ducklake.TieredStorageConfig{
-		Enable:               policy.Enable,
-		Volumes:              volumes,
-		TTLMoveIntervalSec:   policy.TTLMoveIntervalSec,
-		MoveFactor:           policy.MoveFactor,
-		ConcurrentMoves:      policy.ConcurrentMoves,
-		MoveOnStartup:        policy.MoveOnStartup,
-		CatalogType:          ducklake.CatalogType(w.storageConfig.DuckLake.CatalogType),
-		CatalogPath:          w.storageConfig.DuckLake.CatalogPath,
-		TuningThreads:        w.storageConfig.DuckLake.Tuning.Threads,
-		TuningMemoryLimit:    w.storageConfig.DuckLake.Tuning.MemoryLimit,
+		Enable:              policy.Enable,
+		Volumes:             volumes,
+		TTLMoveIntervalSec:  policy.TTLMoveIntervalSec,
+		MoveFactor:          policy.MoveFactor,
+		ConcurrentMoves:     policy.ConcurrentMoves,
+		MoveOnStartup:       policy.MoveOnStartup,
+		CatalogType:         ducklake.CatalogType(w.storageConfig.DuckLake.CatalogType),
+		CatalogPath:         w.storageConfig.DuckLake.CatalogPath,
+		TuningThreads:       w.storageConfig.DuckLake.Tuning.Threads,
+		TuningMemoryLimit:   w.storageConfig.DuckLake.Tuning.MemoryLimit,
 		TuningTempDirectory: w.storageConfig.DuckLake.Tuning.TempDirectory,
-		CatalogLocker:        w.ducklakeManager,
+		CatalogLocker:       w.ducklakeManager,
 	}
 
 	tsm, err := ducklake.NewTieredStorageManager(tsmConfig)
@@ -985,12 +985,17 @@ func (w *Writer) startTieringService() error {
 
 	// Create tiering service
 	tieringCfg := TieringConfig{
-		Enable:            policy.Enable,
-		CheckIntervalSec:  policy.TTLMoveIntervalSec,
-		ConcurrentMoves:   policy.ConcurrentMoves,
-		MoveOnStartup:     policy.MoveOnStartup,
-		MoveFactor:        policy.MoveFactor,
-		SnapshotExpireSec: w.storageConfig.DuckLake.Compaction.SnapshotExpireIntervalSec,
+		Enable:                  policy.Enable,
+		CheckIntervalSec:        policy.TTLMoveIntervalSec,
+		ConcurrentMoves:         policy.ConcurrentMoves,
+		MoveOnStartup:           policy.MoveOnStartup,
+		MoveFactor:              policy.MoveFactor,
+		SnapshotExpireSec:       w.storageConfig.DuckLake.Compaction.SnapshotExpireIntervalSec,
+		TestOnlyTable:           policy.TestOnlyTable,
+		TestOnlyPartitionDate:   policy.TestOnlyPartitionDate,
+		TestOnlyExpectedRows:    policy.TestOnlyExpectedRows,
+		TestOnlyMaxDataAgeDays:  policy.TestOnlyMaxDataAgeDays,
+		TestOnlySkipMaintenance: policy.TestOnlySkipMaintenance,
 	}
 	if tieringCfg.CheckIntervalSec <= 0 {
 		tieringCfg.CheckIntervalSec = 3600 // default 1 hour
