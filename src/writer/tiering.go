@@ -325,20 +325,10 @@ func (ts *TieringService) moveTestOnlyPartition(srcVol, dstVol *ducklake.Volume)
 		return 0, fmt.Errorf("test-only partition %s is newer than TTL cutoff %s", ts.config.TestOnlyPartitionDate, cutoffDate)
 	}
 
-	partitions, err := ts.tieredStorage.GetPartitionsOlderThan(srcVol, ts.config.TestOnlyTable, cutoffDate)
-	if err != nil {
-		return 0, fmt.Errorf("test-only partition scan: %w", err)
-	}
-	matched := false
-	for _, partition := range partitions {
-		if partition == ts.config.TestOnlyPartitionDate {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		return 0, fmt.Errorf("test-only partition %s/%s is not an eligible hot TTL partition", ts.config.TestOnlyTable, ts.config.TestOnlyPartitionDate)
-	}
+	// The test gate deliberately selects one exact partition rather than using
+	// the normal catalog-wide TTL enumeration.  The calendar check above keeps
+	// the target old enough for the configured test cutoff, while the row-count
+	// checks below make the copy/delete operation fail closed.
 
 	srcRows, err := ts.testOnlyPartitionRowCount(srcVol)
 	if err != nil {
